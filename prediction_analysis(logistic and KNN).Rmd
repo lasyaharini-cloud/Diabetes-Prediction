@@ -1,0 +1,421 @@
+---
+title: "Diabetes Prediction using Health Indicators"
+subtitle: "ST563 Presentation 1: Logistic Regression and KNN"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE)
+library(ggplot2)
+library(nnet)
+library(FNN)
+library(pROC)
+library(caret)
+set.seed(42)
+```
+
+Data: cleaned 2021 BRFSS (Kaggle), 236,378 respondents, 21 health indicators.
+Positive class of binary tasks = 1 (prediabetes or diabetes), negative = 0 (no diabetes).
+Kaggle's binary file codes prediabetes as 0, so the imbalanced binary outcome is
+derived from the 3-class file. The balanced file is used as is.
+
+# Data
+
+```{r}
+data.012=read.csv("data/diabetes_012_health_indicators_BRFSS2021.csv")
+data.bal=read.csv("data/diabetes_binary_5050split_health_indicators_BRFSS2021.csv")
+dim(data.012)
+dim(data.bal)
+```
+
+```{r}
+# 3-class outcome and binary outcome (1 = prediab or diab)
+table(data.012$Diabetes_012)
+data.012$y.bin=as.numeric(data.012$Diabetes_012>0)
+data.012$y.cls=factor(data.012$Diabetes_012)
+table(data.012$y.bin)
+table(data.bal$Diabetes_binary)
+```
+
+```{r}
+xvars=names(data.012)[-c(1,23,24)]   # 21 predictors
+length(xvars)
+```
+
+# Train / test split
+
+Stratified 80/20 split (fixed seed), same rows used for the imbalanced and 3-class tasks.
+
+```{r}
+set.seed(42)
+idx=createDataPartition(data.bal$Diabetes_binary,p=0.8,list=FALSE)
+bal.tr=data.bal[idx,]
+bal.te=data.bal[-idx,]
+
+set.seed(42)
+idx=createDataPartition(data.012$y.bin,p=0.8,list=FALSE)
+imb.tr=data.012[idx,]
+imb.te=data.012[-idx,]
+cls.tr=data.012[idx,]
+cls.te=data.012[-idx,]
+
+cat("balanced:",nrow(bal.tr),"/",nrow(bal.te),"\n")
+cat("imbalanced:",nrow(imb.tr),"/",nrow(imb.te),"\n")
+cat("3-class:",nrow(cls.tr),"/",nrow(cls.te),"\n")
+```
+
+```{r}
+metric.bin=function(truth,pred,prob){
+  tp=sum(truth==1&pred==1); fp=sum(truth==0&pred==1)
+  fn=sum(truth==1&pred==0); tn=sum(truth==0&pred==0)
+  acc=(tp+tn)/length(truth)
+  precision=tp/(tp+fp)
+  recall=tp/(tp+fn)
+  specificity=tn/(tn+fp)
+  f1=2*precision*recall/(precision+recall)
+  auc=as.numeric(roc(truth,prob,levels=c(0,1),direction="<",quiet=TRUE)$auc)
+  c(accuracy=acc,precision=precision,recall=recall,specificity=specificity,f1=f1,auc=auc)
+}
+
+metric.cls=function(truth,pred){
+  per=NULL
+  for(cl in 0:2){
+    tp=sum(truth==cl&pred==cl); fp=sum(truth!=cl&pred==cl); fn=sum(truth==cl&pred!=cl)
+    prec=ifelse(tp+fp==0,0,tp/(tp+fp))
+    rec=ifelse(tp+fn==0,0,tp/(tp+fn))
+    f1=ifelse(prec+rec==0,0,2*prec*rec/(prec+rec))
+    per=rbind(per,data.frame(class=cl,precision=prec,recall=rec,f1=f1))
+  }
+  list(accuracy=mean(truth==pred),per_class=per,macro_f1=mean(per$f1))
+}
+```
+
+# Logistic regression
+
+## Binary (balanced and imbalanced)
+
+```{r}
+fit.lr.bal=glm(Diabetes_binary~.,data=bal.tr[,c("Diabetes_binary",xvars)],family=binomial)
+fit.lr.imb=glm(y.bin~.,data=imb.tr[,c("y.bin",xvars)],family=binomial)
+
+p.lr.bal=predict(fit.lr.bal,bal.te,type="response")
+p.lr.imb=predict(fit.lr.imb,imb.te,type="response")
+```
+
+```{r}
+m.bal.lr=metric.bin(bal.te$Diabetes_binary,as.numeric(p.lr.bal>0.5),p.lr.bal)
+m.imb.lr=metric.bin(imb.te$y.bin,as.numeric(p.lr.imb>0.5),p.lr.imb)
+data.frame(LR.balanced=round(m.bal.lr,4),LR.imbalanced=round(m.imb.lr,4))
+```
+
+```{r}
+table(pred=as.numeric(p.lr.bal>0.5),truth=bal.te$Diabetes_binary)
+table(pred=as.numeric(p.lr.imb>0.5),truth=imb.te$y.bin)
+```
+
+## Coefficients and odds ratios (imbalanced model, 189,103 training rows)
+
+```{r}
+est=coef(fit.lr.imb)
+se=summary(fit.lr.imb)$coefficients[,"Std. Error"]
+tab.or=round(cbind(OR=exp(est),lower=exp(est-1.96*se),upper=exp(est+1.96*se)),3)
+z=est/se
+tab.or=tab.or[order(abs(z),decreasing=TRUE),]
+tab.or=tab.or[rownames(tab.or)!="(Intercept)",]
+tab.or
+```
+
+```{r}
+or.plot=data.frame(var=rownames(tab.or),OR=tab.or[,"OR"],lo=tab.or[,"lower"],hi=tab.or[,"upper"])
+ggplot(or.plot,aes(x=reorder(var,OR),y=OR))+
+  geom_point()+geom_errorbar(aes(ymin=lo,ymax=hi),width=0.2)+
+  geom_hline(yintercept=1,lty=2)+scale_y_log10()+
+  coord_flip()+labs(x=NULL,title="Odds ratios (imbalanced logistic regression)")
+```
+
+Predictive associations only, not causal. Largest |z|: BMI, GenHlth, HighBP, Age, HighChol.
+
+## 3-class (multinomial logistic regression)
+
+```{r}
+fit.mn=multinom(y.cls~.,data=cls.tr[,c("y.cls",xvars)],maxit=300,trace=FALSE)
+p.mn=predict(fit.mn,cls.te,type="probs")                # columns = "0","1","2"
+pred.mn=as.numeric(colnames(p.mn)[apply(p.mn,1,which.max)])
+truth.cls=cls.te$Diabetes_012
+cat("convergence:",fit.mn$convergence,"\n")
+```
+
+```{r}
+met.mn=metric.cls(truth.cls,pred.mn)
+met.mn$per_class
+cat("accuracy:",round(met.mn$accuracy,4),"macro F1:",round(met.mn$macro_f1,4),"\n")
+
+# one-vs-rest AUC per class
+for(cl in 0:2){
+  yb=as.numeric(truth.cls==cl)
+  cat("OVR AUC class",cl,":",round(as.numeric(roc(yb,p.mn[,cl+1],levels=c(0,1),direction="<",quiet=TRUE)$auc),3),"\n")
+}
+```
+
+```{r}
+table(pred=pred.mn,truth=truth.cls)
+```
+
+```{r}
+# true share vs predicted share (argmax rule)
+true.share=prop.table(table(factor(truth.cls,levels=0:2)))
+pred.share=prop.table(table(factor(pred.mn,levels=0:2)))
+data.frame(class=0:2,true.share=round(as.numeric(true.share),3),
+           predicted.share=round(as.numeric(pred.share),3))
+```
+
+```{r}
+# coefficients (log-odds vs class 0)
+coef.mn=coef(fit.mn)
+round(t(rbind(prediabetes=coef.mn["1",],diabetes=coef.mn["2",])),3)
+```
+
+Accuracy ~84% equals the majority class share (83.4%). Under the argmax rule
+nearly all rows are labeled "0": prediabetes (2.4%) is never the most probable
+class, and diabetes is under-predicted. This is class imbalance plus overlap of
+the classes, not a fitting error - the OVR AUC above shows the ranking ability.
+
+# KNN
+
+Binary tasks (positive = 1). Predictors standardised with training mean/sd only.
+k is chosen by 5-fold CV on the training set. For the imbalanced task CV uses a
+40,000-row training subsample to save time (test set untouched), the final model
+uses the full training set.
+
+```{r}
+stand=function(d.tr,d.te){
+  X.tr=as.matrix(d.tr[,xvars]); X.te=as.matrix(d.te[,xvars])
+  mu=colMeans(X.tr); s=apply(X.tr,2,sd); s[s==0]=1
+  list(tr=scale(X.tr,center=mu,scale=s),te=scale(X.te,center=mu,scale=s))
+}
+ks=c(1,3,5,7,9,13,17,21,25,31,41,61,81,101)
+
+knn.cv=function(X,y){
+  set.seed(42)
+  folds=createFolds(as.factor(y),k=5)
+  res=NULL
+  for(i in 1:5){
+    vi=folds[[i]]; tri=setdiff(1:nrow(X),vi)
+    nn=get.knnx(X[tri,,drop=FALSE],X[vi,,drop=FALSE],k=max(ks))
+    ytr=y[tri]; yv=y[vi]
+    for(k in ks){
+      pr=rowMeans(matrix(ytr[nn$nn.index[,1:k,drop=FALSE]],ncol=k))
+      acc=mean((pr>0.5)==yv)
+      auc=as.numeric(roc(yv,pr,levels=c(0,1),direction="<",quiet=TRUE)$auc)
+      res=rbind(res,data.frame(k=k,acc=acc,auc=auc))
+    }
+  }
+  aggregate(cbind(acc,auc)~k,res,mean)
+}
+```
+
+```{r}
+X.bal=stand(bal.tr,bal.te)
+cv.bal=knn.cv(X.bal$tr,bal.tr$Diabetes_binary)
+
+set.seed(42)
+sub.imb=sample(nrow(imb.tr),40000)
+X.imb=stand(imb.tr,imb.te)
+cv.imb=knn.cv(X.imb$tr[sub.imb,,drop=FALSE],imb.tr$y.bin[sub.imb])
+```
+
+```{r}
+k.best.bal=cv.bal$k[which.max(cv.bal$auc)]
+k.best.imb=cv.imb$k[which.max(cv.imb$auc)]
+cat("chosen k, balanced:",k.best.bal,"(CV AUC",round(max(cv.bal$auc),4),")\n")
+cat("chosen k, imbalanced:",k.best.imb,"(CV AUC",round(max(cv.imb$auc),4),")\n")
+```
+
+```{r}
+plot(cv.bal$k,cv.bal$auc,type="b",col="blue",ylab="5-fold CV value",xlab="k",
+     main="Balanced: CV accuracy/AUC vs k",ylim=c(0.7,0.9))
+lines(cv.bal$k,cv.bal$acc,type="b",col="red")
+legend("bottomright",legend=c("AUC","accuracy"),col=c("blue","red"),lty=1)
+
+plot(cv.imb$k,cv.imb$auc,type="b",col="blue",ylab="5-fold CV value",xlab="k",
+     main="Imbalanced (40k subsample): CV accuracy/AUC vs k",ylim=c(0.7,0.9))
+lines(cv.imb$k,cv.imb$acc,type="b",col="red")
+legend("bottomright",legend=c("AUC","accuracy"),col=c("blue","red"),lty=1)
+```
+
+```{r}
+knn.prob=function(X.tr,y.tr,X.te,k){
+  nn=get.knnx(X.tr,X.te,k=k)
+  rowMeans(matrix(y.tr[nn$nn.index],ncol=k))
+}
+p.knn.bal=knn.prob(X.bal$tr,bal.tr$Diabetes_binary,X.bal$te,k.best.bal)
+p.knn.imb=knn.prob(X.imb$tr,imb.tr$y.bin,X.imb$te,k.best.imb)
+
+m.bal.knn=metric.bin(bal.te$Diabetes_binary,as.numeric(p.knn.bal>0.5),p.knn.bal)
+m.imb.knn=metric.bin(imb.te$y.bin,as.numeric(p.knn.imb>0.5),p.knn.imb)
+data.frame(KNN.balanced=round(m.bal.knn,4),KNN.imbalanced=round(m.imb.knn,4))
+```
+
+```{r}
+table(pred=as.numeric(p.knn.bal>0.5),truth=bal.te$Diabetes_binary)
+table(pred=as.numeric(p.knn.imb>0.5),truth=imb.te$y.bin)
+```
+
+## 3-class KNN (majority vote)
+
+Same preprocessing. k chosen by 5-fold CV (accuracy) on a 40,000-row training
+subsample; final model uses the full training set.
+
+```{r}
+ks3=c(31,61,101,151,201)
+knn3.cv=function(X,y){
+  set.seed(42)
+  folds=createFolds(as.factor(y),k=5)
+  res=NULL
+  for(i in 1:5){
+    vi=folds[[i]]; tri=setdiff(1:nrow(X),vi)
+    nn=get.knnx(X[tri,,drop=FALSE],X[vi,,drop=FALSE],k=max(ks3))
+    ytr=y[tri]; yv=y[vi]
+    for(k in ks3){
+      nb=matrix(ytr[nn$nn.index[,1:k,drop=FALSE]],ncol=k)
+      votes=cbind(rowSums(nb==0),rowSums(nb==1),rowSums(nb==2))
+      pred=apply(votes,1,which.max)-1
+      res=rbind(res,data.frame(k=k,acc=mean(pred==yv)))
+    }
+  }
+  aggregate(acc~k,res,mean)
+}
+
+X.cls=stand(cls.tr,cls.te)
+set.seed(42)
+sub.cls=sample(nrow(cls.tr),40000)
+cv.cls=knn3.cv(X.cls$tr[sub.cls,,drop=FALSE],cls.tr$Diabetes_012[sub.cls])
+cv.cls
+```
+
+```{r}
+k.best.cls=cv.cls$k[which.max(cv.cls$acc)]
+cat("chosen k, 3-class:",k.best.cls,"(CV accuracy",round(max(cv.cls$acc),4),")\n")
+
+nn3=get.knnx(X.cls$tr,X.cls$te,k=k.best.cls)
+nb=matrix(cls.tr$Diabetes_012[nn3$nn.index],ncol=k.best.cls)
+votes=cbind(rowSums(nb==0),rowSums(nb==1),rowSums(nb==2))
+pred.knn3=apply(votes,1,which.max)-1
+
+met.knn3=metric.cls(truth.cls,pred.knn3)
+met.knn3$per_class
+cat("accuracy:",round(met.knn3$accuracy,4),"macro F1:",round(met.knn3$macro_f1,4),"\n")
+
+p.knn3=votes/k.best.cls
+for(cl in 0:2){
+  yb=as.numeric(truth.cls==cl)
+  cat("OVR AUC class",cl,":",round(as.numeric(roc(yb,p.knn3[,cl+1],levels=c(0,1),direction="<",quiet=TRUE)$auc),3),"\n")
+}
+```
+
+```{r}
+table(pred=pred.knn3,truth=truth.cls)
+prop.table(table(pred.knn3))
+```
+
+Same result as multinomial logistic: accuracy ~84% is the majority-class
+baseline, prediab is never the majority vote in a neighborhood.
+
+# Model comparison
+
+Binary (test sets, positive = 1):
+
+```{r}
+eval.bin=data.frame(
+  LR.balanced=round(m.bal.lr,3),LR.imbalanced=round(m.imb.lr,3),
+  KNN.balanced=round(m.bal.knn,3),KNN.imbalanced=round(m.imb.knn,3))
+t(eval.bin)
+
+# majority baseline (always predict 0)
+base.bal=mean(bal.te$Diabetes_binary==0)
+base.imb=mean(imb.te$y.bin==0)
+data.frame(dataset=c("balanced","imbalanced"),
+           majority.accuracy=c(round(base.bal,3),round(base.imb,3)))
+```
+
+3-class (test set):
+
+```{r}
+data.frame(
+  model=c("multinomial LR","KNN"),
+  accuracy=round(c(met.mn$accuracy,met.knn3$accuracy),4),
+  macro_F1=round(c(met.mn$macro_f1,met.knn3$macro_f1),4))
+```
+
+# ROC curves
+
+```{r}
+roc.bal.lr=roc(bal.te$Diabetes_binary,p.lr.bal,levels=c(0,1),direction="<",quiet=TRUE)
+roc.bal.knn=roc(bal.te$Diabetes_binary,p.knn.bal,levels=c(0,1),direction="<",quiet=TRUE)
+roc.imb.lr=roc(imb.te$y.bin,p.lr.imb,levels=c(0,1),direction="<",quiet=TRUE)
+roc.imb.knn=roc(imb.te$y.bin,p.knn.imb,levels=c(0,1),direction="<",quiet=TRUE)
+
+par(mfrow=c(1,2))
+plot(roc.bal.lr,col="blue",lwd=2,main="Balanced test set")
+lines(roc.bal.knn,col="red",lwd=2)
+legend("bottomright",col=c("blue","red"),lwd=2,
+       legend=c(paste0("LR AUC=",round(auc(roc.bal.lr),3)),
+                paste0("KNN AUC=",round(auc(roc.bal.knn),3))))
+plot(roc.imb.lr,col="blue",lwd=2,main="Imbalanced test set")
+lines(roc.imb.knn,col="red",lwd=2)
+legend("bottomright",col=c("blue","red"),lwd=2,
+       legend=c(paste0("LR AUC=",round(auc(roc.imb.lr),3)),
+                paste0("KNN AUC=",round(auc(roc.imb.knn),3))))
+par(mfrow=c(1,1))
+```
+
+# Summary of figures and results
+
+Figures/tables produced above:
+
+1. class counts and imbalance ratios (Data)
+2. train/test sizes (Train / test split)
+3. LR test metrics, balanced and imbalanced (Logistic regression)
+4. LR confusion matrices (test sets)
+5. LR coefficients / odds-ratio table and plot (imbalanced)
+6. multinomial LR per-class metrics, OVR AUC, confusion matrix
+7. multinomial coefficients
+8. KNN CV accuracy/AUC vs k plots, chosen k
+9. KNN test metrics and confusion matrices
+10. 3-class KNN CV accuracy vs k, test metrics, confusion matrix
+11. binary model comparison table + majority baseline
+12. 3-class model comparison table
+13. ROC curves with AUC (both binary tasks)
+
+Key numbers:
+
+```{r}
+cat("binary test AUC - LR:",round(m.bal.lr["auc"],3),"(balanced),",
+    round(m.imb.lr["auc"],3),"(imbalanced); KNN:",round(m.bal.knn["auc"],3),
+    "(balanced),",round(m.imb.knn["auc"],3),"(imbalanced)\n")
+cat("binary test recall - LR:",round(m.bal.lr["recall"],3),"(balanced),",
+    round(m.imb.lr["recall"],3),"(imbalanced); KNN:",round(m.bal.knn["recall"],3),
+    "(balanced),",round(m.imb.knn["recall"],3),"(imbalanced)\n")
+cat("majority-class accuracy on imbalanced test set:",round(base.imb,3),"\n")
+cat("chosen k - balanced:",k.best.bal,", imbalanced:",k.best.imb,
+    ", 3-class:",k.best.cls,"\n")
+cat("3-class multinomial LR - accuracy:",round(met.mn$accuracy,4),
+    ", macro F1:",round(met.mn$macro_f1,3),
+    ", prediab recall:",round(met.mn$per_class$recall[2],3),
+    ", diab recall:",round(met.mn$per_class$recall[3],3),"\n")
+cat("3-class KNN - accuracy:",round(met.knn3$accuracy,4),
+    ", macro F1:",round(met.knn3$macro_f1,3),
+    ", prediab recall:",round(met.knn3$per_class$recall[2],3),
+    ", diab recall:",round(met.knn3$per_class$recall[3],3),"\n")
+```
+
+# Next steps
+
+* balanced vs imbalanced comparison in more depth, threshold tuning
+* Decision Tree / Random Forest
+* further KNN tuning (weights, feature selection)
+* cross-validation improvements
+* regularized logistic regression
+* boosting, neural networks
