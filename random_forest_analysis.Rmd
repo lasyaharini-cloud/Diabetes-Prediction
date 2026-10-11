@@ -1,0 +1,179 @@
+---
+title: "Random Forest Analysis of Diabetes Health Indicators"
+subtitle: "ST563: Random Forest vs. Logistic Regression and KNN"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+  pdf_document:
+    df_print: kable
+    toc: true
+    toc_depth: 3
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
+library(randomForest)
+library(caret)
+library(pROC)
+set.seed(42)
+```
+
+Random forest (RF) models are fitted to the same three datasets and the same
+80/20 train–test split (seed 42) as the earlier logistic-regression (LR) and KNN
+analysis, so results are directly comparable.
+
+- **Balanced** binary: 1 = diabetes, 0 = no diabetes / prediabetes.
+- **Imbalanced** binary: 1 = prediabetes or diabetes, 0 = no diabetes.
+- **3-class**: 0 = no diabetes, 1 = prediabetes, 2 = diabetes.
+
+```{r data}
+data.012=read.csv("data/diabetes_012_health_indicators_BRFSS2021.csv")
+data.bal=read.csv("data/diabetes_binary_5050split_health_indicators_BRFSS2021.csv")
+data.012$y.bin=as.numeric(data.012$Diabetes_012>0)
+xvars=names(data.012)[-c(1,23,24)]   # 21 predictors
+
+set.seed(42)
+idx=createDataPartition(data.bal$Diabetes_binary,p=0.8,list=FALSE)
+bal.tr=data.bal[idx,]; bal.te=data.bal[-idx,]
+set.seed(42)
+idx=createDataPartition(data.012$y.bin,p=0.8,list=FALSE)
+imb.tr=data.012[idx,]; imb.te=data.012[-idx,]
+cls.tr=data.012[idx,]; cls.te=data.012[-idx,]
+
+metric.bin=function(truth,pred,prob){
+  tp=sum(truth==1&pred==1); fp=sum(truth==0&pred==1)
+  fn=sum(truth==1&pred==0); tn=sum(truth==0&pred==0)
+  acc=(tp+tn)/length(truth)
+  precision=tp/(tp+fp); recall=tp/(tp+fn); specificity=tn/(tn+fp)
+  f1=2*precision*recall/(precision+recall)
+  auc=as.numeric(roc(truth,prob,levels=c(0,1),direction="<",quiet=TRUE)$auc)
+  c(accuracy=acc,precision=precision,recall=recall,specificity=specificity,f1=f1,auc=auc)
+}
+metric.cls=function(truth,pred){
+  per=NULL
+  for(cl in 0:2){
+    tp=sum(truth==cl&pred==cl); fp=sum(truth!=cl&pred==cl); fn=sum(truth==cl&pred!=cl)
+    prec=ifelse(tp+fp==0,0,tp/(tp+fp))
+    rec=ifelse(tp+fn==0,0,tp/(tp+fn))
+    f1=ifelse(prec+rec==0,0,2*prec*rec/(prec+rec))
+    per=rbind(per,data.frame(class=cl,precision=prec,recall=rec,f1=f1))
+  }
+  list(accuracy=mean(truth==pred),per_class=per,macro_f1=mean(per$f1))
+}
+
+if(file.exists("rf_models.rds")){
+  mods=readRDS("rf_models.rds")
+  rf.bal=mods$rf.bal; rf.imb=mods$rf.imb; rf.cls=mods$rf.cls
+}else{
+  rf.bal=randomForest(x=bal.tr[,xvars],y=factor(bal.tr$Diabetes_binary),ntree=500,importance=TRUE)
+  rf.imb=randomForest(x=imb.tr[,xvars],y=factor(imb.tr$y.bin),ntree=500,importance=TRUE)
+  rf.cls=randomForest(x=cls.tr[,xvars],y=factor(cls.tr$Diabetes_012),ntree=500,importance=TRUE)
+  saveRDS(list(rf.bal=rf.bal,rf.imb=rf.imb,rf.cls=rf.cls),"rf_models.rds")
+}
+
+p.rf.bal=predict(rf.bal,bal.te[,xvars],type="prob")[,"1"]
+p.rf.imb=predict(rf.imb,imb.te[,xvars],type="prob")[,"1"]
+m.bal.rf=metric.bin(bal.te$Diabetes_binary,as.numeric(p.rf.bal>0.5),p.rf.bal)
+m.imb.rf=metric.bin(imb.te$y.bin,as.numeric(p.rf.imb>0.5),p.rf.imb)
+
+p.rf.cls=predict(rf.cls,cls.te[,xvars],type="prob")
+pred.rf.cls=as.numeric(colnames(p.rf.cls)[apply(p.rf.cls,1,which.max)])
+truth.cls=cls.te$Diabetes_012
+met.rf.cls=metric.cls(truth.cls,pred.rf.cls)
+ovr_auc=sapply(0:2,function(cl) as.numeric(roc(as.numeric(truth.cls==cl),p.rf.cls[,cl+1],levels=c(0,1),direction="<",quiet=TRUE)$auc))
+```
+
+# Model parameters
+
+Same hyperparameters for all three forests (defaults except `ntree` and
+`importance`).
+
+```{r params}
+params=data.frame(
+  Hyperparameter=c("Number of trees (ntree)","mtry (candidates per split)",
+    "nodesize (min terminal-node size)","maxnodes (tree-depth limit)",
+    "sampsize (bootstrap sample size)","replace (bootstrap resampling)",
+    "Split criterion","importance","Type"),
+  Setting=c(paste0(rf.bal$ntree),
+    paste0(rf.bal$mtry,"  (default = floor(sqrt(21)))"),
+    "1 (default)","none (fully grown trees)",
+    "n (one bootstrap draw per tree, with replacement)",
+    "TRUE (default)","Gini impurity","TRUE (permutation + Gini)","classification"),
+  stringsAsFactors=FALSE)
+params
+```
+
+# Prediction results
+
+## Binary (balanced and imbalanced)
+
+```{r binary}
+bin.rf=data.frame(
+  Dataset=c("Balanced","Imbalanced"),
+  Accuracy=c(m.bal.rf["accuracy"],m.imb.rf["accuracy"]),
+  Precision=c(m.bal.rf["precision"],m.imb.rf["precision"]),
+  Recall=c(m.bal.rf["recall"],m.imb.rf["recall"]),
+  Specificity=c(m.bal.rf["specificity"],m.imb.rf["specificity"]),
+  F1=c(m.bal.rf["f1"],m.imb.rf["f1"]),
+  AUC=c(m.bal.rf["auc"],m.imb.rf["auc"]))
+bin.rf[,-1]=round(bin.rf[,-1],4)
+bin.rf
+```
+
+## 3-class
+
+```{r threeclass}
+cls.rf=data.frame(
+  Class=c("No diabetes (0)","Pre-diabetes (1)","Diabetes (2)"),
+  Precision=met.rf.cls$per_class$precision,
+  Recall=met.rf.cls$per_class$recall,
+  F1=met.rf.cls$per_class$f1,
+  `OVR AUC`=ovr_auc)
+cls.rf[,-1]=round(cls.rf[,-1],4)
+cls.rf
+```
+
+```{r threeclass_overall}
+data.frame(Accuracy=round(met.rf.cls$accuracy,4),
+           `Macro F1`=round(met.rf.cls$macro_f1,4),
+           `Mean OVR AUC`=round(mean(ovr_auc),4))
+```
+
+# Comparison with LR and KNN
+
+## Binary
+
+```{r cmp_binary}
+prev=read.csv("model_metrics.csv")
+lr.knn=data.frame(model=prev$model,dataset=prev$dataset,accuracy=prev$accuracy,
+  precision=prev$precision,recall=prev$sensitivity,F1=prev$F1,AUC=prev$AUC)
+rf=data.frame(model="Random forest",dataset=c("Balanced","Imbalanced"),
+  accuracy=c(m.bal.rf["accuracy"],m.imb.rf["accuracy"]),
+  precision=c(m.bal.rf["precision"],m.imb.rf["precision"]),
+  recall=c(m.bal.rf["recall"],m.imb.rf["recall"]),
+  F1=c(m.bal.rf["f1"],m.imb.rf["f1"]),
+  AUC=c(m.bal.rf["auc"],m.imb.rf["auc"]))
+cmp=rbind(lr.knn,rf)
+cmp[,-(1:2)]=round(cmp[,-(1:2)],4)
+cmp
+```
+
+## 3-class
+
+```{r cmp_threeclass}
+prev3=read.csv("model_metrics_3class_overall.csv")
+cmp3=rbind(
+  data.frame(model=prev3$model,accuracy=prev3$accuracy,
+             macro_F1=prev3$macro_F1,mean_OVR_AUC=prev3$mean_OVR_AUC),
+  data.frame(model="Random forest",accuracy=met.rf.cls$accuracy,
+             macro_F1=met.rf.cls$macro_f1,mean_OVR_AUC=mean(ovr_auc)))
+cmp3[,-1]=round(cmp3[,-1],4)
+cmp3
+```
+
+Random forest matches the ranking ability of LR and KNN on the binary tasks (AUC
+around 0.79–0.81) and, unlike them, predicts a small non-zero share of the rare
+prediabetes and diabetes classes in the 3-class task.
