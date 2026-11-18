@@ -1,0 +1,119 @@
+---
+title: "Dimensionality Reduction and the Effect of Class Imbalance"
+subtitle: "PCA, t-SNE and UMAP (2D and 3D) on the balanced, imbalanced and 3-class diabetes datasets"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
+library(knitr)
+library(kableExtra)
+
+# Compute the embeddings if the cache is missing (first run); otherwise reuse it.
+if (!file.exists("dr_results/dr_embeddings.rds")) {
+  source("dr_analysis.R")
+}
+
+cc  <- read.csv("dr_results/tables/class_counts.csv")
+ov  <- read.csv("dr_results/tables/overlap_metrics.csv")
+emb <- readRDS("dr_results/dr_embeddings.rds")
+
+dsname <- c(balanced = "Balanced binary", imbalanced = "Imbalanced binary",
+            threeclass = "3-class")
+varexp <- do.call(rbind, lapply(names(emb), function(nm) {
+  v <- emb[[nm]]$var_explained
+  data.frame(Dataset = dsname[nm], PC1 = v[1], PC2 = v[2], PC3 = v[3],
+             Cumulative = sum(v))
+}))
+```
+
+This report visualises the three diabetes datasets in two and three dimensions
+with **PCA**, **t-SNE** and **UMAP**, and uses the resulting geometry (together
+with local-neighbourhood purity) to explain **why class imbalance causes the
+models to collapse onto the majority class**, as observed in the earlier
+logistic-regression / KNN / random-forest / classification-tree analysis.
+
+# Data and preprocessing
+
+- **Balanced binary**: 50/50 file (Diabetes\_binary), 67,136 rows.
+- **Imbalanced binary**: derived from the 3-class file, 1 = prediabetes or
+  diabetes (`Diabetes_012 > 0`), 236,378 rows.
+- **3-class**: `Diabetes_012` = 0 (none), 1 (prediabetes), 2 (diabetes),
+  236,378 rows.
+
+All 21 health indicators were standardised (mean 0, sd 1). t-SNE and UMAP are
+expensive on the full data, so a **stratified subsample of about 6,000 rows per
+dataset** (class proportions preserved) was used for all projections, which
+keeps the methods directly comparable. PCA is also shown on the same subsample.
+
+```{r classcounts}
+cc$share <- sprintf("%.1f%%", 100 * cc$share)
+kable(cc, col.names = c("Dataset", "Class", "n", "Share"),
+      caption = "Class sizes and proportions in each dataset.") %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+The class imbalance is dramatic: 50/50 in the balanced file, roughly 83/17 in the
+imbalanced binary task, and 83/14/2.4 in the 3-class task, where **prediabetes is
+only 2.4% of the data (about 1 in 35 compared with the majority class)**.
+
+```{r varexp}
+varexp[, 2:5] <- lapply(varexp[, 2:5], function(x) sprintf("%.1f%%", 100 * x))
+kable(varexp, caption = "Variance explained by the first three principal components.") %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+The first three principal components capture only about **31%** of the total
+variance in every dataset. The information that separates the classes is spread
+across many dimensions, so any 2D/3D projection inevitably shows a lot of
+overlap -- an early sign that the classes are not linearly separable in a
+low-dimensional view.
+
+# Balanced binary dataset
+
+```{r, out.width="100%"}
+knitr::include_graphics("dr_results/figures/dr_2d_balanced.png")
+```
+
+```{r, out.width="100%"}
+knitr::include_graphics("dr_results/figures/dr_3d_balanced.png")
+```
+
+PCA shows partial separation along PC1 (no-diabetes tends to the left, diabetes
+to the right), but the two clouds overlap heavily. t-SNE and UMAP reveal local
+clusters, yet **within every cluster the two classes are intermingled**. Because
+both classes are equally frequent, the locally mixed regions are split roughly
+in half, and the models still predict both classes well (recall around
+0.76--0.78). This is the "clean" reference case.
+
+# Imbalanced binary dataset
+
+```{r, out.width="100%"}
+knitr::include_graphics("dr_results/figures/dr_2d_imbalanced.png")
+```
+
+```{r, out.width="100%"}
+knitr::include_graphics("dr_results/figures/dr_3d_imbalanced.png")
+```
+
+The geometry is similar to the balanced case -- the minority (prediabetes or
+diabetes) still overlaps the majority -- but now the majority completely
+dominates the point cloud. Visually the minority points are a small fraction of
+every dense region. This is the same overlap as before, now combined with a
+strong prior in favour of the majority class.
+
+# 3-class dataset
+
+```{r, out.width="100%"}
+knitr::include_graphics("dr_results/figures/dr_2d_threeclass.png")
+```
+
+```{r, out.width="100%"}
+knitr::include_graphics("dr_results/figures/dr_3d_threeclass.png")
+```
+
