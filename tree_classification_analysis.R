@@ -1,7 +1,6 @@
 # ST563 Diabetes Prediction Project
-# Classification Tree Analysis
-# Run this file from the project folder using:
-# Rscript tree_classification_analysis.R
+# Classification tree analysis
+# Run: Rscript tree_classification_analysis.R
 
 set.seed(42)
 
@@ -11,7 +10,7 @@ if (!requireNamespace("rpart", quietly = TRUE)) {
 
 library(rpart)
 
-# Folder locations for the input data and the files produced by this analysis.
+# Input and output folders.
 data_dir <- "data"
 output_dir <- "tree_results"
 table_dir <- file.path(output_dir, "tables")
@@ -19,17 +18,14 @@ figure_dir <- file.path(output_dir, "figures")
 dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
 
-# Read the two data sets needed for the tree models.
-# The full data has 3 outcome groups (0, 1, and 2).
-# The 50/50 file is the balanced binary data set.
+# Read the three-class and balanced binary data.
 data_012 <- read.csv(file.path(data_dir, "diabetes_012_health_indicators_BRFSS2021.csv"))
 data_bal <- read.csv(file.path(data_dir, "diabetes_binary_5050split_health_indicators_BRFSS2021.csv"))
 
-# These are the 21 health-related variables used to predict diabetes status.
+# Use the same 21 predictors as the other models.
 predictors <- setdiff(names(data_012), "Diabetes_012")
 
-# Keep the same numeric coding used in the logistic regression and KNN analysis.
-# BMI is continuous. Most other variables are binary or ordered BRFSS variables.
+# Keep the original coding. BMI stays continuous.
 prepare_predictors <- function(data) {
   data[, predictors, drop = FALSE]
 }
@@ -38,8 +34,7 @@ make_task_data <- function(raw_data, response) {
   data.frame(response = response, prepare_predictors(raw_data), check.names = FALSE)
 }
 
-# Make an 80/20 train/test split. Stratifying means each split has about the
-# same class proportions as the original data set.
+# Make an 80/20 split with similar class proportions in both parts.
 stratified_split <- function(y, train_prop = 0.80, seed = 42) {
   set.seed(seed)
   groups <- split(seq_along(y), y)
@@ -50,12 +45,12 @@ stratified_split <- function(y, train_prop = 0.80, seed = 42) {
   list(train = train_ids, test = setdiff(seq_along(y), train_ids))
 }
 
-# This prevents R from giving an error when a metric has a zero denominator.
+# Avoid errors when a metric has a zero denominator.
 safe_divide <- function(numerator, denominator) {
   ifelse(denominator == 0, NA_real_, numerator / denominator)
 }
 
-# Calculate AUC from predicted probabilities without needing an extra package.
+# Calculate binary AUC from predicted probabilities.
 auc_binary <- function(truth, probability, positive_class) {
   is_positive <- truth == positive_class
   n_positive <- sum(is_positive)
@@ -66,7 +61,7 @@ auc_binary <- function(truth, probability, positive_class) {
     (n_positive * n_negative)
 }
 
-# Calculate the evaluation measures requested for binary classification.
+# Calculate binary test metrics.
 binary_metrics <- function(truth, predicted, probability, positive_class) {
   negative_class <- setdiff(levels(truth), positive_class)
   tp <- sum(truth == positive_class & predicted == positive_class)
@@ -91,8 +86,7 @@ binary_metrics <- function(truth, predicted, probability, positive_class) {
   )
 }
 
-# For the 3-class model, calculate a set of metrics for each class and then
-# calculate macro averages. Macro averages give every class equal importance.
+# Calculate one-versus-rest metrics for each class and macro averages.
 multiclass_metrics <- function(truth, predicted, probabilities) {
   classes <- levels(truth)
   confusion <- table(Predicted = predicted, Actual = truth)
@@ -104,7 +98,7 @@ multiclass_metrics <- function(truth, predicted, probabilities) {
     precision <- safe_divide(tp, tp + fp)
     recall <- safe_divide(tp, tp + fn)
     specificity <- safe_divide(tn, tn + fp)
-    # If the model never predicts a class, its precision and F1 are recorded as 0.
+    # Record 0 when a class is never predicted.
     precision <- ifelse(is.na(precision), 0, precision)
     f1 <- safe_divide(2 * precision * recall, precision + recall)
     f1 <- ifelse(is.na(f1), 0, f1)
@@ -134,8 +128,7 @@ multiclass_metrics <- function(truth, predicted, probabilities) {
   )
 }
 
-# First grow a tree, then use 10-fold cross-validation to choose the pruning
-# value. Pruning removes extra splits that do not improve prediction enough.
+# Grow a tree, then prune it using 10-fold cross-validation.
 fit_pruned_tree <- function(train_data) {
   full_tree <- rpart(
     response ~ ., data = train_data, method = "class",
@@ -147,7 +140,7 @@ fit_pruned_tree <- function(train_data) {
   list(full = full_tree, pruned = pruned_tree, cp_table = cp_table, best_row = best_row)
 }
 
-# Save a picture of the final tree for the presentation.
+# Save the final tree plot.
 save_tree_plot <- function(tree, path, title) {
   png(path, width = 2200, height = 1500, res = 180)
   par(mar = c(1, 1, 3, 1))
@@ -174,13 +167,13 @@ save_roc_plot <- function(truth, probability, positive_class, path, title) {
   dev.off()
 }
 
-# Fit and evaluate one binary classification tree.
+# Fit and test one binary tree.
 run_binary_task <- function(task_name, task_data, positive_class) {
   split <- stratified_split(task_data$response)
   train_data <- task_data[split$train, , drop = FALSE]
   test_data <- task_data[split$test, , drop = FALSE]
   tree_fit <- fit_pruned_tree(train_data)
-  # The predicted class is the class with the larger predicted probability.
+  # Choose the class with the higher predicted probability.
   probabilities <- predict(tree_fit$pruned, test_data, type = "prob")
   predicted <- factor(colnames(probabilities)[max.col(probabilities)], levels = levels(test_data$response))
   metrics <- binary_metrics(test_data$response, predicted, probabilities[, positive_class], positive_class)
@@ -199,7 +192,7 @@ run_binary_task <- function(task_name, task_data, positive_class) {
   list(name = task_name, train = train_data, test = test_data, fit = tree_fit, metrics = metrics)
 }
 
-# Fit and evaluate the full 3-class classification tree.
+# Fit and test the three-class tree.
 run_multiclass_task <- function(task_name, task_data) {
   split <- stratified_split(task_data$response)
   train_data <- task_data[split$train, , drop = FALSE]
@@ -222,8 +215,8 @@ run_multiclass_task <- function(task_name, task_data) {
   list(name = task_name, train = train_data, test = test_data, fit = tree_fit, metrics = metrics)
 }
 
-# Create the three outcomes used in the project comparison.
-# The imbalanced binary outcome combines prediabetes and diabetes as class 1.
+# Create the three outcomes used in the project.
+# The imbalanced binary outcome combines prediabetes and diabetes.
 balanced_binary <- make_task_data(
   data_bal,
   factor(ifelse(data_bal$Diabetes_binary == 1, "Diabetes", "No diabetes"),
@@ -240,12 +233,12 @@ three_class <- make_task_data(
          labels = c("No diabetes", "Prediabetes", "Diabetes"))
 )
 
-# Run all three tree models.
+# Run the three tree models.
 balanced_result <- run_binary_task("balanced_binary", balanced_binary, "Diabetes")
 imbalanced_result <- run_binary_task("imbalanced_binary", imbalanced_binary, "Prediabetes or diabetes")
 three_class_result <- run_multiclass_task("three_class", three_class)
 
-# Put the main test-set results into small tables for easy comparison.
+# Save small result tables for comparison.
 binary_comparison <- rbind(
   data.frame(dataset = "Balanced binary", balanced_result$metrics$summary),
   data.frame(dataset = "Imbalanced binary", imbalanced_result$metrics$summary)
@@ -256,8 +249,7 @@ three_class_comparison <- three_class_comparison[, c("dataset", setdiff(names(th
 write.csv(binary_comparison, file.path(table_dir, "binary_tree_comparison.csv"), row.names = FALSE)
 write.csv(three_class_comparison, file.path(table_dir, "three_class_tree_summary.csv"), row.names = FALSE)
 
-# Create short notes using the actual model results. These can be used when
-# making slides or explaining the model to the group.
+# Create notes for the presentation.
 importance <- head(read.csv(file.path(table_dir, "imbalanced_binary_variable_importance.csv")), 5)
 round_for_display <- function(data, digits = 3) {
   numeric_columns <- vapply(data, is.numeric, logical(1))

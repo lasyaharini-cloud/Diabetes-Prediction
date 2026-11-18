@@ -1,3 +1,7 @@
+
+=======
+# Ridge and lasso logistic regression for the binary outcome.
+
 set.seed(42)
 data_dir <- "data"
 out_dir <- "regularization_results"
@@ -41,7 +45,11 @@ log_loss <- function(y, p) {
   -mean(y * log(p) + (1 - y) * log(1 - p))
 }
 
+<<<<<<< HEAD
 # This fits logistic ridge or lasso. The intercept is never penalized.
+=======
+# Fit ridge or lasso without penalizing the intercept.
+>>>>>>> fefa11d (Analysis update)
 fit_penalized <- function(x, y, lambda, type, max_iter = 700, tol = 1e-7, start = NULL) {
   p <- ncol(x)
   if (is.null(start)) {
@@ -86,7 +94,11 @@ metrics <- function(y, p, threshold = .5) {
                                           Actual = c("No diabetes", "Prediabetes or diabetes"))))
 }
 
+<<<<<<< HEAD
 # Select lambda using 5-fold CV on a stratified 30,000-row subset of training data.
+=======
+# Choose lambda with 5-fold cross-validation on training data.
+>>>>>>> fefa11d (Analysis update)
 set.seed(42)
 positive <- sample(which(y_train == 1), round(30000 * mean(y_train == 1)))
 negative <- sample(which(y_train == 0), 30000 - length(positive))
@@ -173,7 +185,11 @@ for (r in 1:n) for (c in 1:n) text(c, n - r + 1, sprintf("%.2f", corr[r, c]),
                                      col = ifelse(abs(corr[r, c]) > .55, "white", "black"), cex = .85)
 dev.off()
 
+<<<<<<< HEAD
 # Visual 2: lambda selection.
+=======
+# Plot 2: choose lambda.
+>>>>>>> fefa11d (Analysis update)
 png(file.path(fig_dir, "02_cross_validated_penalty_selection.png"), width = 1800, height = 900, res = 180)
 par(mfrow = c(1, 2), mar = c(5, 5, 3, 1), family = "sans")
 plot(log10(ridge_cv$lambda), ridge_cv$log_loss, type = "b", pch = 19, col = "#0072B2",
@@ -187,7 +203,11 @@ legend("topright", legend = c("Minimum loss", "1-SE lasso"), col = c("#0072B2", 
        lty = c(3, 2), lwd = 2, bty = "n")
 par(mfrow = c(1, 1)); dev.off()
 
+<<<<<<< HEAD
 # Visual 3: held-out test metrics for the baseline and regularized models.
+=======
+# Plot 3: compare test-set results.
+>>>>>>> fefa11d (Analysis update)
 metric_names <- c("auc", "recall", "f1")
 metric_values <- as.matrix(test_results[, metric_names])
 rownames(metric_values) <- test_results$model
@@ -200,7 +220,11 @@ text(positions, metric_values, labels = sprintf("%.3f", as.vector(metric_values)
 legend("topright", legend = rownames(metric_values), fill = c("#0072B2", "#E69F00", "#009E73"), bty = "n")
 dev.off()
 
+<<<<<<< HEAD
 # Visual 4: coefficients retained by lasso.
+=======
+# Plot 4: predictors kept by lasso.
+>>>>>>> fefa11d (Analysis update)
 display_selected <- head(selected, 12)
 display_selected <- display_selected[order(display_selected$standardized_coefficient), ]
 png(file.path(fig_dir, "04_lasso_selected_predictors.png"), width = 1800, height = 1200, res = 180)
@@ -212,7 +236,11 @@ barplot(display_selected$standardized_coefficient, horiz = TRUE, names.arg = dis
 abline(v = 0, col = "gray40")
 dev.off()
 
+<<<<<<< HEAD
 # Visual 5: coefficient paths show what happens as the penalty becomes stronger.
+=======
+# Plot 5: show how coefficients change as lambda increases.
+>>>>>>> fefa11d (Analysis update)
 fit_coefficient_path <- function(type, lambda_values) {
   ordered_lambda <- sort(lambda_values, decreasing = TRUE)
   coefficients <- matrix(NA_real_, nrow = length(ordered_lambda), ncol = ncol(x_train),
