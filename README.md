@@ -50,6 +50,7 @@ These results show predictive associations, not causal relationships.
 - `random_forest_analysis.Rmd` - random forest
 - `ridge_lasso_regularization.R` - ridge and lasso analysis
 - `tree_results/` - tree figures and tables
+- `diabetes_Filtered_CV.ipynb` - XGboost and RF for filtered data
 
 ## Team
 
